@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 
 from app.dependencies.auth import CurrentUser, PortalDbSession
 from app.schemas.enrollment import (
@@ -118,11 +118,17 @@ def student_enrollments(student_id: int, current_user: CurrentUser, db: PortalDb
 
 @router.get("/courses/search")
 def search_courses(
+    response: Response,
     current_user: CurrentUser,
     db: PortalDbSession,
     q: Annotated[str, Query(min_length=2, description="Partial course name")],
+    status: Annotated[
+        int | None, Query(ge=0, le=1, description="1 active, 0 pending")
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=MAX_RESULTS)] = 10,
 ) -> list[dict]:
+    """At most `limit` courses; the true number of matches is in `X-Total-Count`."""
+    response.headers["X-Total-Count"] = str(enrollment_service.count_courses(db, q, status))
     return [
         {
             "id": c.id,
@@ -130,5 +136,5 @@ def search_courses(
             "status": c.status,
             "duration_days": c.duration_days,
         }
-        for c in enrollment_service.find_courses(db, q, limit)
+        for c in enrollment_service.find_courses(db, q, limit, status=status)
     ]

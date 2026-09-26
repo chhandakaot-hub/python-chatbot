@@ -40,6 +40,7 @@ from app.services import (
 
 from app.services.ai_tool_args import (  # noqa: E402 -- shared with ai_tools_extra
     _LIMIT,
+    _TOTAL_NOTE,
     _bool,
     _float,
     _int,
@@ -410,11 +411,17 @@ TOOL_DECLARATIONS = types.Tool(
             description=(
                 "Find courses by partial name, returning ids, full names, status and "
                 "duration. Use it to resolve a course a person names loosely before "
-                "filtering enrollments by course_id."
+                "filtering enrollments by course_id, or for 'how many courses are called "
+                "...'. " + _TOTAL_NOTE
             ),
             parameters=_object(
                 {
                     "name": types.Schema(type=types.Type.STRING, description="Partial course name."),
+                    "status": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="1 = only active courses, 0 = only pending ones. Use it, "
+                        "with total_matching, for 'how many ... are active'.",
+                    ),
                     "limit": _LIMIT,
                 },
                 required=["name"],
@@ -896,9 +903,13 @@ def _get_enrollment(enrollment_id: Any) -> dict[str, Any]:
 
 def _find_courses(**args: Any) -> dict[str, Any]:
     with PortalSessionLocal() as db:
-        courses = enrollment_service.find_courses(db, str(args.get("name", "")), _limit(args))
+        name = str(args.get("name", ""))
+        status = _int(args.get("status"))
+        courses = enrollment_service.find_courses(db, name, _limit(args), status=status)
+        # No bare `count` key: it read as a total, and was only the page length.
         return {
-            "count": len(courses),
+            "returned": len(courses),
+            "total_matching": enrollment_service.count_courses(db, name, status),
             "courses": [
                 {
                     "id": c.id,

@@ -207,11 +207,32 @@ def breakdown_enrollments(db: Session, by: str, limit: int = 10, **criteria) -> 
     ]
 
 
-def find_courses(db: Session, name: str, limit: int = 10) -> list[Course]:
-    """Courses by partial name -- lets the model resolve a name to an id."""
+def _course_query(*columns, name: str, status: int | None = None) -> Select:
+    """Shared by the list and its count, so the two cannot disagree."""
     statement = (
-        select(Course)
+        select(*columns)
+        .select_from(Course)
         .where(Course.deleted_at.is_(None), Course.course_name.like(f"%{name.strip()}%"))
+    )
+    if status is not None:
+        statement = statement.where(Course.status == status)  # 0 pending, 1 active
+    return statement
+
+
+def count_courses(db: Session, name: str, status: int | None = None) -> int:
+    """True number of courses matching -- not the capped list length."""
+    return db.scalar(_course_query(func.count(Course.id), name=name, status=status)) or 0
+
+
+def find_courses(
+    db: Session, name: str, limit: int = 10, status: int | None = None
+) -> list[Course]:
+    """Courses by partial name -- lets the model resolve a name to an id.
+
+    At most MAX_RESULTS; `count_courses` says how many matched.
+    """
+    statement = (
+        _course_query(Course, name=name, status=status)
         .order_by(Course.course_name)
         .limit(max(1, min(limit, MAX_RESULTS)))
     )
