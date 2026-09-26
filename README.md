@@ -105,6 +105,29 @@ All endpoints are under `/api`. Everything except register and login needs an
 | GET | `/api/completion/{enrollment_id}` | One enrollment's completion in full |
 | GET | `/api/completion/{enrollment_id}/progress` | Coursework handed in for one enrollment |
 | GET | `/api/students/{id}/completion` | Completion state for every course a student takes |
+| GET | `/api/feedback/{kind}/search` | Survey responses with the reasons ticked (`kind`: assignment_csat, class_csat, evaluator_csat, nps, nps_v2) |
+| GET | `/api/feedback/{kind}/count` | True count of matching responses |
+| GET | `/api/feedback/{kind}/summary` | Average rating and spread; promoters/passives/detractors and NPS for nps kinds |
+| GET | `/api/feedback/{kind}/breakdown?by=` | Counts by rating/month/reason/course/batch_id/survey_type/evaluator |
+| GET | `/api/feedback/nps-scores` | The portal's precomputed NPS per course or bootcamp |
+| GET | `/api/packages`, `/api/packages/{id}` | Packages with the courses they include |
+| GET | `/api/bootcamps` | Bootcamps with the books they ship |
+| GET | `/api/books` | Books by name/SKU, or the books a course/bootcamp ships |
+| GET | `/api/book-deliveries/search` | Book deliveries (no name, phone, email or address) |
+| GET | `/api/book-deliveries/count` | True count of matching deliveries |
+| GET | `/api/book-deliveries/breakdown?by=` | Counts by book/sent/deliverable/course_type/additional/country/state/course/created_month/sent_month |
+| GET | `/api/staff/search` | Staff by name, role or status (no email or phone) |
+| GET | `/api/staff/count` | True count of matching staff |
+| GET | `/api/staff/breakdown?by=` | Counts by role or status |
+| GET | `/api/staff/{id}/courses` | Courses one staff member evaluates, instructs or mentors |
+| GET | `/api/courses/{id}/staff` | Evaluators, instructors and mentors on one course |
+| GET | `/api/pause-log/search` | Enrollment pause history (no reason text) |
+| GET | `/api/pause-log/count` | True count of matching pause-log entries |
+| GET | `/api/pause-log/breakdown?by=` | Counts by status/request_source/month |
+| GET | `/api/students/{id}/availability` | Weekly windows a student said they are free |
+| GET | `/api/students/{id}/notes/count` | How many internal notes exist (never the text) |
+| GET | `/api/heard-about` | How students say they found LawSikho |
+| GET | `/api/reference/{kind}` | country, state, tag, course_category or job_role lookups |
 
 ### Example
 
@@ -302,6 +325,78 @@ fallback.
 "not completed" alone does not say whether a student is one assignment short or
 has not started.
 
+### Surveys, catalogue, staff and reference data
+
+Four more groups of portal tables are connected, all read-only and all with the
+same rules as above (allow-listed columns, capped lists, bound parameters, one
+filter builder shared by search/count/breakdown).
+
+| Group | Portal tables | Notes |
+| --- | --- | --- |
+| Feedback | `assignment_csat_form`, `class_csat_form`, `evaluator_csat_form`, `nps_form`, `nps_form_v2`, their reason tables, `nps_course_data`, `nps_bootcamp_data` | CSAT is 1-5, NPS 0-10. NPS bands follow the portal's own graph: 0-6 detractor, 7-8 passive, 9-10 promoter. A class response with status `D` was withdrawn and is left out of every count. |
+| Catalogue | `packages`, `package_course_mappings`, `bootcamps`, `books`, `course_books`, `bootcamp_books`, `book_delivery_log` | |
+| Staff | `users`, `roles`, `model_has_roles`, `course_evaluator/instructor/mentor_mappings` | Staff are people who run the portal, not students. Status: 0 disabled, 1 approved, 2 blocked, 3 pending. |
+| Student extras and reference | `enrollment_pause_log_new`, `student_week_day_availabilities`, `know_about_lawsikho_*`, `students_internal_notes` (count only), `countries`, `states`, `tags`, `course_categories`, `job_roles` | |
+
+**Deliberately not exposed.** Anything a person typed, and anything that
+identifies or contacts someone, is not mapped at all -- so it cannot be read
+even by mistake, and never reaches Google:
+
+* survey `comment`/`other`/`reason`/`experience`/`suggestions` text (the ticked
+  reason *options* are fixed, staff-written strings and are shown);
+* the body of internal student notes -- only "how many, and when the latest was
+  written";
+* pause `paused_reason` and support ticket ids;
+* book-delivery student name, email, phone, street address and pin code (city,
+  state and country stay);
+* staff email, phone, password, tokens and calendar/meeting links;
+* the sign-up "other" answer, raw registration JSON, third-party ids, and
+  `personal_access_tokens`, `password_resets`, `fcm_tokens` and the framework
+  log tables (`telescope_*`, `failed_jobs`, `activity_log`).
+
+**Lists say how many matched.** `find_courses`, `find_packages`,
+`find_bootcamps`, `find_books` and `lookup_reference` return at most 25 rows.
+(`find_courses` used to return a bare `count` key that was only the length of
+the page, and a model reported it as the total; it now returns `returned` and
+`total_matching`, and takes `status` -- 1 active, 0 pending -- so "how many
+courses are active" is one call, not a hand count.) Each tool result carries
+`returned` and `total_matching`, and the matching REST endpoints
+(`/api/packages`, `/api/bootcamps`, `/api/books`, `/api/reference/{kind}`) put
+the total in an `X-Total-Count` header while the body stays a plain list (plus
+`/api/courses/search`, which also takes `status`). The
+tool descriptions tell the model to report `total_matching`, never the length of
+the list. Without it, asked how many states India has, the model paged through
+letter searches and answered 32 (there are 36), and it answered 70 for a table
+of 146 bootcamps. The list and its count are built from one filter function per
+tool, so a filter cannot reach one and miss the other.
+
+**`bootcamps.refund_eligible_course` is a count, not a flag.** The portal reads
+it as `$limit`: how many of a bootcamp's courses may carry the refund-eligible
+tag ("Only N course(s) can be refund eligible in this bootcamp"). It defaults to
+1; 143 bootcamps have 1 and 3 have 2, so every bootcamp allows at least one.
+It is exposed as `refund_eligible_course_limit` and filtered with
+`refund_course_limit`. It was first modelled as a boolean, which made every
+bootcamp show `refund_eligible: true` and left the filter matching nothing.
+
+Feedback breakdowns are biggest-group-first by default. For "best rated" or
+"worst rated" questions pass `sort=average_rating` or `sort=lowest_rating`
+together with `min_responses`: without a floor, an evaluator with one 5-star
+response outranks one with a hundred 4.8s.
+
+Everything a tool returns goes to Gemini as JSON, and the SDK cannot encode a
+`date` or `datetime`, so `ai_tools_extra._run()` passes every result through
+FastAPI's `jsonable_encoder`. `tests/test_tool_json_safety.py` runs each tool
+that returns a temporal value and fails if the result is not plain JSON.
+
+A filter that does not exist for the chosen survey kind (`course_id` on
+`class_csat`) is a 400 that lists the allowed ones, never silently dropped. The
+bot's own login table and the portal's staff table are both called `users`;
+they live on separate bases in separate databases, and a test pins that as the
+only shared name.
+
+Not connected: live classes, performance-coach calls, notifications, projects,
+and the remaining housekeeping tables.
+
 ### Query cost
 
 Some of these tables are large enough that a careless join is the difference
@@ -312,6 +407,46 @@ between a fast answer and none. Three rules the services follow:
   Adding the joins unconditionally cost 20+ seconds per breakdown against under
   half a second now, and made `/api/enrollments/count` take nine seconds where
   it now takes under one.
+  The same lesson applied to `assignments` (2.5M rows): every count joined
+  `courses` and `topics`, so `count_assignments` took 15.7s -- over the cap --
+  and "how many assignments are active?" failed outright. Measured on the live
+  table: a plain count 1.6s with no join, 15.7s with both; `status = 1` 5s
+  without the `courses` join, 18s with it. Neither join can change a count
+  (`course_id` and `topic_id` are NOT NULL foreign keys, zero orphans), so they
+  are made only when `course_name`, `topic` or a group-by-name needs them.
+  Grouping by course or topic name counts per foreign-key id first (an index
+  scan) and joins names onto that small result, which took "by course" from
+  15s to 2.6s and made "by topic" possible at all. An unfiltered *search* sorts
+  by `id`, because sorting 2.5M rows by `(course_id, ref_assignment_no)` has no
+  index behind it; inside one course the course's own order is kept.
+  `tests/test_assignment_performance.py` pins the join shape.
+
+  `student_assignments` (4.4M rows) had a different problem: the soft-delete
+  predicate. Only **one** row in the table is soft-deleted, but
+  `WHERE deleted_at IS NULL` forces a row lookup for every row grouped, so
+  `GROUP BY status` took 27s -- against 2.2s without it, because the `status`
+  index alone can answer the grouping. Grouping by course did not finish in
+  120s. The services now count "all matching rows" and subtract the soft-deleted
+  ones (few, and indexed), which is exact: `GROUP BY status` 2.4s, by
+  mandatory 5s, by month 8s, and `count course_id = 1` a steady 0.5s where it
+  used to swing between 7s and past the cap. Grouping by course counts per
+  enrollment first (~54k) and attaches names to that small result (4s). An
+  index hint was tried and rejected: 31s for the status grouping, and
+  MySQL-specific. Grouping every student assignment by *topic* cannot be made to
+  fit -- 4.4M rows point at 2.5M distinct assignments and the join ran past
+  100s -- so it is refused with a message unless scoped to a student,
+  enrollment or assignment (a whole course, ~380k rows, was still too slow).
+  `tests/test_student_assignment_performance.py` pins the shapes and checks
+  every breakdown sums to its count.
+
+  Timings on this table swing with the buffer pool: a course-and-status
+  combination measured 6s warm and 40s on a cold first run, so a first question
+  after the database has been idle can be slower than the figures above.
+
+  A statement stopped at the cap is reported to the model as "ran past the
+  limit -- do not retry it unchanged; narrow it or answer from another tool",
+  and logged as a one-line warning without a traceback. Before, it read "Tool
+  failed" and the model retried the same 15s query up to six times.
 * **eager-load from the join that is already there.** `contains_eager()`, not
   `joinedload()`: where a relationship is joined for filtering, `joinedload`
   adds a *second*, aliased copy of the same join. Every list endpoint was
@@ -355,7 +490,7 @@ driving-table choice was.
 
 ## How the AI reaches the portal
 
-`AI_TOOLS_ENABLED=true` lets Gemini call twenty-nine functions declared in
+`AI_TOOLS_ENABLED=true` lets Gemini call fifty-two functions declared in
 `app/services/ai_tools.py`:
 
 * students -- `search_students`, `count_students`, `breakdown_students`,
@@ -372,7 +507,24 @@ driving-table choice was.
   `get_result`, `get_student_results`;
 * completion -- `completion_summary`, `search_completions`,
   `count_completions`, `breakdown_completions`, `get_completion`,
-  `get_student_completion`.
+  `get_student_completion`;
+* feedback -- `feedback_summary`, `search_feedback`, `count_feedback`,
+  `breakdown_feedback`, `get_nps_scores`;
+* catalogue -- `find_packages`, `find_bootcamps`, `find_books`,
+  `search_book_deliveries`, `count_book_deliveries`,
+  `breakdown_book_deliveries`;
+* staff -- `find_staff`, `count_staff`, `breakdown_staff`, `get_course_staff`,
+  `get_staff_courses`;
+* student extras -- `search_pause_logs`, `count_pause_logs`,
+  `breakdown_pause_logs`, `get_student_availability`, `heard_about_us`,
+  `count_student_notes`;
+* reference data -- `lookup_reference`.
+
+The feedback, catalogue, staff, extras and reference tools live in
+`app/services/ai_tools_extra.py` and are merged into the same declarations and
+handlers, so `dispatch()` refuses an invented tool or parameter for them
+exactly as for the rest. The schema builders and argument coercion they share
+with `ai_tools.py` are in `app/services/ai_tool_args.py`.
 
 The completion tools carry an explicit instruction to prefer them over the
 enrollment tools' `completed` filter for any question about finishing a course,
@@ -401,10 +553,14 @@ is data, not a command, which is what the system prompt tells the model.
 pytest
 ```
 
-139 tests run against an in-memory SQLite database with the Gemini call
+392 tests run against an in-memory SQLite database with the Gemini call
 stubbed, so they need neither MySQL nor an API key. The portal tests never
 connect either: they pin the column allow-lists, the codes copied from the
-Laravel constants, the grouping allow-lists and the query shapes.
+Laravel constants, the grouping allow-lists and the query shapes. For the
+survey, catalogue, staff and extras modules the `portal_db` fixture builds the
+mapped portal tables in SQLite, so the services also run for real -- NPS
+arithmetic, withdrawn-response exclusion, soft deletes, and the router status
+codes are checked against data, not just against the SQL text.
 
 ### Reply length and the tool loop
 
@@ -430,6 +586,25 @@ Two limits decide whether a long answer arrives intact:
   transcript full of function calls behind it the model copies the pattern and
   emits another call, which leaves `response.text` empty and surfaced as a
   bogus "AI provider returned an empty response".
+
+### Timeouts and retries
+
+Every model call goes through `gemini_service._generate()`, which adds:
+
+* **`AI_TIMEOUT_SECONDS` (default 60).** One attempt is abandoned after this
+  long. It exists because a single call was once measured at ~5 minutes while
+  every portal lookup around it took under 0.3s. `0` disables the cap.
+* **`AI_MAX_RETRIES` (default 2), `AI_RETRY_BACKOFF_SECONDS` (default 1).**
+  A 5xx, a 429 or a timed-out attempt is retried, waiting 1s, then 2s. Anything
+  else (a bad key, a bad request, blocked content) fails at once, because it
+  would fail the same way every time.
+
+If every attempt fails the caller gets **502** (provider error) or **504** (no
+answer in time). Worst case a reply can take about
+`(AI_MAX_RETRIES + 1) * AI_TIMEOUT_SECONDS` plus the waits -- three minutes
+with the defaults -- so lower the timeout if that is too long for your users.
+The final "answer from what you have" turn after too many tool rounds uses the
+same wrapper, so a 503 there no longer throws away a completed lookup.
 
 The Gemini client is cached **per event loop**, not per process: its async
 transport binds its connection pool to the loop that first used it, so a
