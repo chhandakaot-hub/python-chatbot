@@ -16,7 +16,9 @@ from typing import Any
 
 from fastapi import HTTPException
 from google.genai import types
+from sqlalchemy.exc import OperationalError
 
+from app.core.config import settings
 from app.core.portal_database import PortalSessionLocal
 from app.schemas.assignment import (
     assignment_out,
@@ -48,6 +50,9 @@ from app.services.ai_tool_args import (  # noqa: E402 -- shared with ai_tools_ex
 )
 
 logger = logging.getLogger(__name__)
+
+# MariaDB's error for a statement stopped by max_statement_time.
+_STATEMENT_TIMEOUT_CODE = 1969
 
 
 # --------------------------------------------------------------------------- #
@@ -1204,6 +1209,22 @@ def dispatch(name: str, args: dict[str, Any] | None) -> dict[str, Any]:
         result = handler(**dict(args or {}))
     except (TypeError, ValueError) as exc:
         return {"error": f"Bad arguments for {name}: {exc}"}
+    except OperationalError as exc:
+        if getattr(exc.orig, "args", [None])[0] != _STATEMENT_TIMEOUT_CODE:
+            logger.exception("tool %r failed", name)
+            return {"error": f"Tool {name} failed."}
+        # Expected on the biggest tables, not a fault: one line, no traceback.
+        # And say plainly not to retry -- with "Tool X failed" the model tried
+        # the same 15s query up to six times, two minutes for one question.
+        logger.warning("tool %r stopped at the portal statement cap", name)
+        return {
+            "error": (
+                f"This query ran past the portal's {settings.PORTAL_STATEMENT_TIMEOUT_SECONDS:g}s "
+                "limit and was stopped. Do not retry it unchanged. Narrow it with a filter "
+                "(a course, student, enrollment or date range), answer from a different tool "
+                "that already covers the question, or tell the user it is too large to answer."
+            )
+        }
     except Exception:
         logger.exception("tool %r failed", name)
         return {"error": f"Tool {name} failed."}
