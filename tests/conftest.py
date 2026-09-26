@@ -66,3 +66,36 @@ def auth_headers(client, credentials) -> dict[str, str]:
     client.post("/api/auth/register", json=credentials)
     token = client.post("/api/auth/login", json=credentials).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def portal_db():
+    """An empty in-memory stand-in for the portal, built from the portal models.
+
+    Lets the portal services run for real. Only the columns the models map
+    exist, which is the point: a column the app never maps cannot be read.
+    `date_format` is MySQL's, so SQLite gets a minimal equivalent.
+    """
+    from sqlalchemy import event
+
+    import app.models.portal  # noqa: F401  registers every portal model
+    from app.core.portal_database import PortalBase
+
+    portal_engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+
+    @event.listens_for(portal_engine, "connect")
+    def _date_format(dbapi_connection, _record):
+        dbapi_connection.create_function(
+            "date_format", 2, lambda value, fmt: None if value is None else str(value)[:7]
+        )
+
+    PortalBase.metadata.create_all(bind=portal_engine)
+    session = sessionmaker(bind=portal_engine, autoflush=False)()
+    try:
+        yield session
+    finally:
+        session.close()
+        PortalBase.metadata.drop_all(bind=portal_engine)
+        portal_engine.dispose()

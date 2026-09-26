@@ -13,11 +13,15 @@ from app.core.database import init_db
 from app.routers import (
     assignments,
     auth,
+    catalog,
     chat,
     completion,
     conversations,
     enrollments,
+    feedback,
     results,
+    staff,
+    student_extras,
     students,
     users,
 )
@@ -56,6 +60,10 @@ for router in (
     assignments.router,
     results.router,
     completion.router,
+    feedback.router,
+    catalog.router,
+    staff.router,
+    student_extras.router,
 ):
     app.include_router(router, prefix=settings.API_V1_PREFIX)
 

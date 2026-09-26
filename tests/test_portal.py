@@ -12,8 +12,17 @@ def test_portal_tables_are_not_registered_on_the_app_base():
     """`init_db()` runs create_all() on Base. Portal tables must never be in it."""
     app_tables = set(Base.metadata.tables)
     portal_tables = set(PortalBase.metadata.tables)
-    assert app_tables.isdisjoint(portal_tables)
+
+    # What matters is that no portal Table object sits on the app's metadata:
+    # create_all() only sees that one.
+    assert not set(Base.metadata.tables.values()) & set(PortalBase.metadata.tables.values())
     assert "students" not in app_tables
+
+    # The one shared *name* is the bot's own login table and the portal's staff
+    # table, both called `users`. They live on separate bases in separate
+    # databases, so this is harmless -- but pin it, so a second collision is a
+    # conscious decision rather than a surprise.
+    assert app_tables & portal_tables == {"users"}
 
 
 def test_portal_engine_is_a_separate_engine():

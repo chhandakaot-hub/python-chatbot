@@ -12,7 +12,6 @@ it invents is refused here rather than reaching the database.
 """
 
 import logging
-from datetime import date
 from typing import Any
 
 from fastapi import HTTPException
@@ -29,6 +28,7 @@ from app.schemas.enrollment import enrollment_out, enrollment_summary
 from app.schemas.result import result_out, result_summary
 from app.schemas.student import StudentOut, StudentSummary
 from app.services import (
+    ai_tools_extra,
     assignment_service,
     completion_service,
     enrollment_service,
@@ -36,11 +36,18 @@ from app.services import (
     result_service,
 )
 
+from app.services.ai_tool_args import (  # noqa: E402 -- shared with ai_tools_extra
+    _LIMIT,
+    _bool,
+    _float,
+    _int,
+    _iso_date,
+    _limit,
+    _object,
+    _parse_date,
+)
+
 logger = logging.getLogger(__name__)
-
-
-def _iso_date(description: str) -> types.Schema:
-    return types.Schema(type=types.Type.STRING, description=f"ISO date (YYYY-MM-DD); {description}.")
 
 
 # --------------------------------------------------------------------------- #
@@ -278,13 +285,6 @@ _COMPLETION_FILTERS = {
     "certified_after": _iso_date("certified on or after"),
     "expiring_before": _iso_date("course access expires before"),
 }
-
-_LIMIT = types.Schema(type=types.Type.INTEGER, description="Maximum rows to return (1-25, default 10).")
-
-
-def _object(properties: dict[str, types.Schema], required: list[str] | None = None) -> types.Schema:
-    return types.Schema(type=types.Type.OBJECT, properties=properties, required=required or None)
-
 
 TOOL_DECLARATIONS = types.Tool(
     function_declarations=[
@@ -679,28 +679,6 @@ TOOL_DECLARATIONS = types.Tool(
 # --------------------------------------------------------------------------- #
 # Argument coercion -- every value here was written by the model
 # --------------------------------------------------------------------------- #
-def _parse_date(value: Any) -> date | None:
-    """A bad date must not raise; it is simply not applied."""
-    if not value:
-        return None
-    try:
-        return date.fromisoformat(str(value)[:10])
-    except ValueError:
-        return None
-
-
-def _int(value: Any) -> int | None:
-    return None if value is None or value == "" else int(value)
-
-
-def _float(value: Any) -> float | None:
-    return None if value is None or value == "" else float(value)
-
-
-def _bool(value: Any) -> bool | None:
-    if value is None or isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"true", "1", "yes"}
 
 
 def _student_criteria(args: dict[str, Any]) -> dict[str, Any]:
@@ -810,10 +788,6 @@ def _completion_criteria(args: dict[str, Any]) -> dict[str, Any]:
         "certified_after": _parse_date(args.get("certified_after")),
         "expiring_before": _parse_date(args.get("expiring_before")),
     }
-
-
-def _limit(args: dict[str, Any]) -> int:
-    return _int(args.get("limit")) or 10
 
 
 # --------------------------------------------------------------------------- #
@@ -1189,6 +1163,12 @@ _HANDLERS = {
     "get_completion": _get_completion,
     "get_student_completion": _get_student_completion,
 }
+
+# The feedback, catalogue, staff, student-extras and reference tools live in
+# their own module; they join the same declarations and handlers so `dispatch()`
+# treats them exactly like the ones above.
+TOOL_DECLARATIONS.function_declarations.extend(ai_tools_extra.DECLARATIONS)
+_HANDLERS.update(ai_tools_extra.HANDLERS)
 
 # Parameter names the model is actually allowed to send, taken from the same
 # declarations it was given, so the two cannot drift apart.

@@ -7,6 +7,10 @@ Confirmed against the portal's Laravel source, not inferred from the data:
     Lawsikho-Assignment-Portal-API/Modules/Assignment/Entities/Assignment.php
     Lawsikho-Assignment-Portal-API/Modules/StudentAssignment/Entities/StudentAssignment.php
     Lawsikho-Assignment-Portal-API/Modules/Result/Entities/Result.php
+    Lawsikho-Assignment-Portal-API/app/Models/User.php
+    Lawsikho-Assignment-Portal-API/Modules/BookDeliveryLog/Entities/BookDeliveryLog.php
+    Lawsikho-Assignment-Portal-API/Modules/ClassCSAT/Entities/ClassCSATForm.php
+    Lawsikho-Assignment-Portal-API/Modules/NPS/Entities/NPSForm.php
 
 If the portal adds a code, add it here; `label()` reports anything unknown as
 "unknown (n)" rather than guessing.
@@ -99,6 +103,15 @@ class StudentStatus(IntEnum):
     DISABLED = 2
 
 
+class UserStatus(IntEnum):
+    """app/Models/User.php -- portal staff accounts, not students."""
+
+    DISABLED = 0
+    APPROVED = 1
+    BLOCKED = 2
+    PENDING = 3
+
+
 STUDENT_STATUS_LABELS = {
     StudentStatus.PENDING: "pending",
     StudentStatus.ACTIVE: "active",
@@ -157,6 +170,23 @@ COMPLETION_COMPLETED = "completed"
 COMPLETION_AWAITING_MCQ = "criteria met, awaiting LMS MCQ confirmation"
 COMPLETION_NOT_COMPLETED = "not completed"
 
+
+USER_STATUS_LABELS = {
+    UserStatus.DISABLED: "disabled",
+    UserStatus.APPROVED: "approved",
+    UserStatus.BLOCKED: "blocked",
+    UserStatus.PENDING: "pending",
+}
+
+# ClassCSATForm.php: ACTIVE = 'A', DEACTIVE = 'D'. A deactivated response is
+# withdrawn, so it is left out of every count and average.
+CSAT_DEACTIVE = "D"
+
+# NPS bands, as the portal's own NPS graph draws them
+# (Modules/NPS/Http/Traits/NPSTrait.php): 0-6 detractor, 7-8 passive, 9-10
+# promoter. NPS = (promoters - detractors) / responses * 100.
+NPS_PROMOTER_MIN = 9
+NPS_DETRACTOR_MAX = 6
 
 COURSE_TYPE_LABELS = {
     CourseType.SIMPLE: "simple",
