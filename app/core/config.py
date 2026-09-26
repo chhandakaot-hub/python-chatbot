@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     # hands the whole budget to the answer.
     AI_THINKING_BUDGET: int | None = None
     AI_TEMPERATURE: float = 0.7
+    # One model call must not hang a chat reply indefinitely: measured, a single
+    # call once took ~5 minutes while the portal lookups around it took under
+    # 0.3s. Seconds per attempt; 0 disables the cap.
+    AI_TIMEOUT_SECONDS: float = 60.0
+    # Transient failures (5xx, 429, a timed-out call) are retried this many
+    # times before the caller sees an error; the wait doubles from the backoff.
+    # Worst case is (AI_MAX_RETRIES + 1) * AI_TIMEOUT_SECONDS plus the waits.
+    AI_MAX_RETRIES: int = 2
+    AI_RETRY_BACKOFF_SECONDS: float = 1.0
 
     # How many past messages to replay as context on each turn
     HISTORY_LIMIT: int = 20

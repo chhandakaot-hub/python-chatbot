@@ -143,6 +143,67 @@ def _function_calls(response: types.GenerateContentResponse) -> list[types.Funct
     return [part.function_call for part in content.parts if part.function_call]
 
 
+def _is_transient(exc: Exception) -> bool:
+    """Worth another attempt: the provider is overloaded, not the request wrong.
+
+    5xx and 429 clear up on their own. Any other 4xx (bad key, bad request,
+    blocked content) will fail identically every time, so it is not retried.
+    """
+    return isinstance(exc, errors.ServerError) or (
+        isinstance(exc, errors.ClientError) and exc.code == 429
+    )
+
+
+async def _generate(
+    client: genai.Client,
+    contents: list[types.Content],
+    config: types.GenerateContentConfig,
+) -> types.GenerateContentResponse:
+    """One model call with a per-attempt timeout and retries on transient failure.
+
+    Raises HTTPException: 504 if every attempt timed out, 502 for any other
+    provider failure -- the same shape callers already handle.
+    """
+    attempts = max(0, settings.AI_MAX_RETRIES) + 1
+    timeout = settings.AI_TIMEOUT_SECONDS if settings.AI_TIMEOUT_SECONDS > 0 else None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=settings.AI_MODEL, contents=contents, config=config
+                ),
+                timeout=timeout,
+            )
+        except (TimeoutError, errors.APIError) as exc:
+            timed_out = isinstance(exc, TimeoutError)
+            retryable = timed_out or _is_transient(exc)
+            if retryable and attempt < attempts:
+                wait = settings.AI_RETRY_BACKOFF_SECONDS * 2 ** (attempt - 1)
+                logger.warning(
+                    "model call failed (%s), retrying in %.1fs (attempt %d of %d)",
+                    "timed out" if timed_out else f"HTTP {exc.code}",
+                    wait,
+                    attempt,
+                    attempts,
+                )
+                await asyncio.sleep(wait)
+                continue
+
+            if timed_out:
+                raise HTTPException(
+                    status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                    detail=f"AI provider did not answer within {settings.AI_TIMEOUT_SECONDS:g}s "
+                    f"after {attempts} attempt(s).",
+                ) from exc
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"AI provider error: {exc}",
+            ) from exc
+
+    raise AssertionError("unreachable")  # the loop always returns or raises
+
+
 async def generate_reply(history: Sequence[Message], prompt: str) -> str:
     """Ask Gemini for the next assistant turn, letting it query the portal.
 
@@ -154,17 +215,7 @@ async def generate_reply(history: Sequence[Message], prompt: str) -> str:
     config = _build_config(use_tools=settings.AI_TOOLS_ENABLED)
 
     for _ in range(MAX_TOOL_ROUNDS):
-        try:
-            response = await client.aio.models.generate_content(
-                model=settings.AI_MODEL,
-                contents=contents,
-                config=config,
-            )
-        except errors.APIError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"AI provider error: {exc}",
-            ) from exc
+        response = await _generate(client, contents, config)
 
         calls = _function_calls(response)
         if not calls:
@@ -206,17 +257,7 @@ async def generate_reply(history: Sequence[Message], prompt: str) -> str:
                 ],
             )
         )
-        try:
-            response = await client.aio.models.generate_content(
-                model=settings.AI_MODEL,
-                contents=contents,
-                config=_build_config(use_tools=False),
-            )
-        except errors.APIError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"AI provider error: {exc}",
-            ) from exc
+        response = await _generate(client, contents, _build_config(use_tools=False))
 
     reply = response.text
     if not reply:
